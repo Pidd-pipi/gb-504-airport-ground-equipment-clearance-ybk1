@@ -30,3 +30,7 @@ export function groundUnitCreateApi(http: HttpClient, payload: GroundUnitPayload
 export function groundUnitStateApi(http: HttpClient, id: number, state: UnitState, notes: string, version: number): Observable<GroundUnit> {
   return http.patch<ApiResponse<GroundUnit>>(`${API_BASE}/v1/ground-units/${id}/state`, { state, notes, version }).pipe(map(extractData));
 }
+
+export function groundUnitReinspectionApi(http: HttpClient, id: number, notes: string): Observable<GroundUnit> {
+  return http.post<ApiResponse<GroundUnit>>(`${API_BASE}/v1/ground-units/${id}/reinspection`, { notes }).pipe(map(extractData));
+}

@@ -57,6 +57,16 @@ func (r *TurnaroundRepository) FindActiveByGroundUnitTx(tx *gorm.DB, unitID uint
 	return rows, nil
 }
 
+// ListActive returns every turnaround that is not completed yet. It feeds the
+// re-inspection validity evaluation on the equipment desk.
+func (r *TurnaroundRepository) ListActive() ([]model.Turnaround, error) {
+	var rows []model.Turnaround
+	if err := r.db.Where("status <> ?", "completed").Order("id ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list active turnarounds: %w", err)
+	}
+	return rows, nil
+}
+
 func (r *TurnaroundRepository) List(page, pageSize int, status, risk, search string) ([]model.Turnaround, int64, error) {
 	var rows []model.Turnaround
 	var total int64

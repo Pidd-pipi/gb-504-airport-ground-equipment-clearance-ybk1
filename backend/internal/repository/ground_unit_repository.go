@@ -100,6 +100,30 @@ func (r *GroundUnitRepository) UpdateTx(tx *gorm.DB, unit *model.GroundUnit) err
 	return nil
 }
 
+// UpdateInspectionTx records a fresh re-inspection timestamp without touching
+// the unit state, notes or optimistic-lock version.
+func (r *GroundUnitRepository) UpdateInspectionTx(tx *gorm.DB, id uint64, inspectedAt time.Time) error {
+	result := tx.Model(&model.GroundUnit{}).Where("id = ?", id).
+		Updates(map[string]any{"last_inspection_at": inspectedAt, "updated_at": inspectedAt})
+	if result.Error != nil {
+		return fmt.Errorf("record ground unit re-inspection: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListInspectionBasics returns id and last inspection time for every unit so
+// the service layer can count expired re-inspections.
+func (r *GroundUnitRepository) ListInspectionBasics() ([]model.GroundUnit, error) {
+	var rows []model.GroundUnit
+	if err := r.db.Select("id", "last_inspection_at").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list ground unit inspections: %w", err)
+	}
+	return rows, nil
+}
+
 // Summary returns stable counters for the equipment status header. Zero-value
 // states are included so clients do not need to special-case missing groups.
 func (r *GroundUnitRepository) Summary() (map[string]any, error) {

@@ -62,11 +62,12 @@ func (s *SeedService) Seed() error {
 		}
 		now := time.Now()
 		inspected := now.Add(-2 * time.Hour)
+		stale := now.Add(-30 * time.Hour)
 		units := []model.GroundUnit{
 			{UnitCode: "TUG-017", Name: "飞机牵引车 17", UnitType: "tug", Stand: "A12", State: constants.UnitAvailable, LastInspectionAt: &inspected, Notes: "班前检查正常"},
 			{UnitCode: "GPU-204", Name: "地面电源车 204", UnitType: "gpu", Stand: "A12", State: constants.UnitInspection, LastInspectionAt: &inspected, Notes: "等待绝缘测试"},
 			{UnitCode: "BLT-088", Name: "行李传送带 88", UnitType: "belt_loader", Stand: "B06", State: constants.UnitBlocked, LastInspectionAt: &inspected, Notes: "急停开关异常"},
-			{UnitCode: "WTR-031", Name: "清水车 31", UnitType: "water_service", Stand: "B06", State: constants.UnitAvailable, LastInspectionAt: &inspected},
+			{UnitCode: "WTR-031", Name: "清水车 31", UnitType: "water_service", Stand: "B06", State: constants.UnitAvailable, LastInspectionAt: &stale, Notes: "班前检查已超过 24 小时"},
 		}
 		if err := tx.Create(&units).Error; err != nil {
 			return err

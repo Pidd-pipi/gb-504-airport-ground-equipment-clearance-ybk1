@@ -10,14 +10,14 @@ import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTableModule } from '@angular/material/table';
-import { turnaroundCreateApi, turnaroundStatusApi } from '../api/turnaround.api';
+import { turnaroundCreateApi, turnaroundReadinessApi, turnaroundStatusApi } from '../api/turnaround.api';
 import { RiskBadgeComponent } from '../components/common/risk-badge.component';
 import { StatusBadgeComponent } from '../components/common/status-badge.component';
-import { ROLE } from '../constants/enums';
+import { ROLE, STATUS_TEXT } from '../constants/enums';
 import { useAuth } from '../hooks/use-auth';
 import { usePagination } from '../hooks/use-pagination';
 import { TurnaroundStore } from '../stores/turnaround.store';
-import { RiskLevel, Turnaround } from '../types';
+import { RiskLevel, Turnaround, TurnaroundReadiness } from '../types';
 import { parseHttpError, useHttp } from '../utils/request';
 
 @Component({
@@ -74,14 +74,33 @@ import { parseHttpError, useHttp } from '../utils/request';
           <ng-container matColumnDef="units"><th mat-header-cell *matHeaderCellDef>投入设备</th><td mat-cell *matCellDef="let row">{{ row.ground_unit_ids.length ? row.ground_unit_ids.join(', ') : '未分配' }}</td></ng-container>
           <ng-container matColumnDef="risk"><th mat-header-cell *matHeaderCellDef>风险</th><td mat-cell *matCellDef="let row"><app-risk-badge [level]="row.risk_level"></app-risk-badge></td></ng-container>
           <ng-container matColumnDef="status"><th mat-header-cell *matHeaderCellDef>状态</th><td mat-cell *matCellDef="let row"><app-status-badge [value]="row.status"></app-status-badge></td></ng-container>
-          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><button *ngIf="canManage && row.status === 'open'" mat-stroked-button (click)="startChecks(row)">开始检查</button></td></ng-container>
+          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><div class="row-actions"><button mat-stroked-button (click)="toggleDetail(row)">{{ detail?.turnaround_id === row.id ? '收起' : '详情' }}</button><button *ngIf="canManage && row.status === 'open'" mat-stroked-button (click)="startChecks(row)">开始检查</button></div></td></ng-container>
           <tr mat-header-row *matHeaderRowDef="columns"></tr><tr mat-row *matRowDef="let row; columns: columns"></tr>
         </table>
         <div class="empty" *ngIf="!store.loading() && !store.items().length"><mat-icon>flight</mat-icon><strong>暂无匹配周转</strong><span>调整筛选条件或建立新周转</span></div>
       </div>
       <mat-paginator [length]="store.total()" [pageIndex]="pagination.page() - 1" [pageSize]="pagination.pageSize()" [pageSizeOptions]="[10, 20, 50, 100]" (page)="pageChanged($event)"></mat-paginator>
     </section>
+
+    <section *ngIf="detail" class="create-band detail-band">
+      <div class="band-title"><mat-icon>fact_check</mat-icon><span><strong>{{ detail.flight_no }} 周转详情</strong><small>复检有效期 {{ detail.inspection_window_hours }} 小时 · {{ detail.ready_for_full_clearance ? '满足完全放行条件' : '完全放行被拦截' }}</small></span></div>
+      <div class="detail-grid">
+        <span><small>待处理检查</small>{{ detail.pending_checks }} 项</span>
+        <span><small>未通过检查</small>{{ detail.failed_checks }} 项</span>
+        <span><small>投入设备状态</small>{{ unitStatesText(detail) }}</span>
+        <span><small>逾期设备</small><strong [class.expired-text]="detail.expired_units.length">{{ detail.expired_units.length ? detail.expired_units.join('、') : '无' }}</strong></span>
+      </div>
+      <div class="form-warning" *ngIf="detail.expired_units.length"><mat-icon>warning</mat-icon>设备 {{ detail.expired_units.join('、') }} 复检已过期：完全放行被拦截。请在设备页登记复检，或在放行审核中选择限制放行并填写复检条件。</div>
+      <ul class="blocker-list" *ngIf="detail.blockers.length"><li *ngFor="let blocker of detail.blockers">{{ blocker }}</li></ul>
+    </section>
   `,
+  styles: [`
+    .detail-band .detail-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 4px; color: #34484f; font-size: 12px; }
+    .detail-band .detail-grid small { display: block; margin-bottom: 3px; color: #7a8a90; font-size: 10px; }
+    .detail-band .expired-text { color: #b42318; }
+    .blocker-list { margin: 10px 0 0; padding-left: 18px; color: #64757b; font-size: 11px; }
+    @media (max-width: 700px) { .detail-band .detail-grid { grid-template-columns: repeat(2, 1fr); } }
+  `],
 })
 export class TurnaroundsPage implements OnInit {
   readonly store = inject(TurnaroundStore);
@@ -96,6 +115,7 @@ export class TurnaroundsPage implements OnInit {
   searchText = '';
   showCreate = false;
   saving = false;
+  detail: TurnaroundReadiness | null = null;
   readonly form = this.fb.nonNullable.group({
     flight_no: ['CA', Validators.required], stand: ['A12', Validators.required],
     phase: ['servicing' as 'arrival' | 'servicing' | 'departure', Validators.required],
@@ -107,7 +127,7 @@ export class TurnaroundsPage implements OnInit {
   ngOnInit(): void { this.reload(); }
   phaseText(phase: string): string { return ({ arrival: '进港', servicing: '保障中', departure: '离港' } as Record<string, string>)[phase] || phase; }
   filterStatus(status: string): void { this.statusFilter = status; this.resetAndLoad(); }
-  reload(): void { this.store.load(this.pagination.page(), this.pagination.pageSize(), this.statusFilter, '', this.searchText); }
+  reload(): void { this.detail = null; this.store.load(this.pagination.page(), this.pagination.pageSize(), this.statusFilter, '', this.searchText); }
   resetAndLoad(): void { this.pagination.reset(); this.reload(); }
   pageChanged(event: PageEvent): void { this.pagination.setPage(event.pageIndex + 1); this.pagination.pageSize.set(event.pageSize); this.reload(); }
 
@@ -132,6 +152,20 @@ export class TurnaroundsPage implements OnInit {
       next: () => { this.reload(); this.snack.open('周转已进入检查阶段', '关闭', { duration: 2200 }); },
       error: error => this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }),
     });
+  }
+
+  toggleDetail(row: Turnaround): void {
+    if (this.detail?.turnaround_id === row.id) { this.detail = null; return; }
+    turnaroundReadinessApi(this.http, row.id).subscribe({
+      next: readiness => { this.detail = readiness; },
+      error: error => this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }),
+    });
+  }
+
+  unitStatesText(detail: TurnaroundReadiness): string {
+    const entries = Object.entries(detail.unit_states || {});
+    if (!entries.length) return '未分配';
+    return entries.map(([id, state]) => `#${id} ${STATUS_TEXT[state] || state}`).join('、');
   }
 
   private localDateTime(): string {

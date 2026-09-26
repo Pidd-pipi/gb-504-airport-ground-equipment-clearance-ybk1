@@ -63,11 +63,41 @@ func (s *GroundUnitService) List(page, pageSize int, state, unitType, search str
 	if len(unitType) > 40 || len(search) > 100 {
 		return nil, 0, util.NewAppError(constants.CodeValidationFailed, "filter value is too long")
 	}
-	return s.repo.List(page, pageSize, state, unitType, search)
+	rows, total, err := s.repo.List(page, pageSize, state, unitType, search)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := s.markInspection(rows); err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
 }
 
 func (s *GroundUnitService) Summary() (map[string]any, error) {
-	return s.repo.Summary()
+	summary, err := s.repo.Summary()
+	if err != nil {
+		return nil, err
+	}
+	basics, err := s.repo.ListInspectionBasics()
+	if err != nil {
+		return nil, err
+	}
+	active, err := s.turnaroundRepo.ListActive()
+	if err != nil {
+		return nil, err
+	}
+	highRisk := highRiskActiveUnits(active)
+	now := time.Now()
+	var expired int64
+	for index := range basics {
+		probe := basics[index]
+		markUnitInspection(&probe, unitInspectionWindow(probe.ID, highRisk), now)
+		if probe.InspectionExpired {
+			expired++
+		}
+	}
+	summary["inspection_expired"] = expired
+	return summary, nil
 }
 
 func (s *GroundUnitService) Get(id uint64) (*model.GroundUnit, error) {
@@ -78,6 +108,73 @@ func (s *GroundUnitService) Get(id uint64) (*model.GroundUnit, error) {
 		}
 		return nil, util.Wrap(err, "GroundUnit[id=%d] get failed", id)
 	}
+	active, err := s.turnaroundRepo.ListActive()
+	if err != nil {
+		return nil, err
+	}
+	markUnitInspection(unit, unitInspectionWindow(unit.ID, highRiskActiveUnits(active)), time.Now())
+	return unit, nil
+}
+
+// markInspection fills the transient re-inspection status on each row using
+// the strictest validity window implied by active turnarounds.
+func (s *GroundUnitService) markInspection(rows []model.GroundUnit) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	active, err := s.turnaroundRepo.ListActive()
+	if err != nil {
+		return err
+	}
+	highRisk := highRiskActiveUnits(active)
+	now := time.Now()
+	for index := range rows {
+		markUnitInspection(&rows[index], unitInspectionWindow(rows[index].ID, highRisk), now)
+	}
+	return nil
+}
+
+// RegisterReinspection records a fresh pre-shift re-inspection for a unit. The
+// unit state is deliberately left untouched; only the inspection timestamp
+// moves, and the operator plus timestamp are written to the audit trail.
+func (s *GroundUnitService) RegisterReinspection(id uint64, notes string, actor AuditContext) (*model.GroundUnit, error) {
+	notes = strings.TrimSpace(notes)
+	var unit *model.GroundUnit
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		locked, err := s.repo.FindByIDTx(tx, id)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return util.NewAppError(constants.CodeNotFound, constants.MsgNotFound)
+			}
+			return err
+		}
+		if locked.State == constants.UnitRetired {
+			return util.NewAppError(constants.CodeStateConflict, "retired equipment cannot be re-inspected")
+		}
+		now := time.Now()
+		previous := locked.LastInspectionAt
+		if err := s.repo.UpdateInspectionTx(tx, locked.ID, now); err != nil {
+			return err
+		}
+		locked.LastInspectionAt = &now
+		if err := persistTransitionAudit(tx, actor, "GROUND_UNIT_REINSPECTION", "ground-units", locked.ID, map[string]any{
+			"unit_code": locked.UnitCode, "state": locked.State,
+			"previous_inspection_at": previous, "inspected_at": now, "notes": notes,
+		}); err != nil {
+			return err
+		}
+		unit = locked
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info(constants.LogGroundUnitReinspected, "ground_unit_id", unit.ID, "unit_code", unit.UnitCode)
+	active, err := s.turnaroundRepo.ListActive()
+	if err != nil {
+		return nil, err
+	}
+	markUnitInspection(unit, unitInspectionWindow(unit.ID, highRiskActiveUnits(active)), time.Now())
 	return unit, nil
 }
 

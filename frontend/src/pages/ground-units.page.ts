@@ -11,7 +11,7 @@ import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTableModule } from '@angular/material/table';
-import { groundUnitCreateApi, groundUnitStateApi } from '../api/ground-unit.api';
+import { groundUnitCreateApi, groundUnitReinspectionApi, groundUnitStateApi } from '../api/ground-unit.api';
 import { ConfirmDialogComponent } from '../components/common/confirm-dialog.component';
 import { StatusBadgeComponent } from '../components/common/status-badge.component';
 import { ROLE, UNIT_STATE_TEXT } from '../constants/enums';
@@ -33,11 +33,12 @@ import { parseHttpError, useHttp } from '../utils/request';
       <div><p>GROUND UNIT CONTROL</p><h1>地面设备状态</h1><span>设备可用性直接参与周转编排与放行判断</span></div>
       <button *ngIf="canManage" mat-flat-button (click)="showCreate = !showCreate"><mat-icon>{{ showCreate ? 'close' : 'add' }}</mat-icon>{{ showCreate ? '收起' : '登记设备' }}</button>
     </header>
-    <section class="metrics">
+    <section class="metrics units-metrics">
       <div><span>设备总数</span><strong>{{ store.summary().total }}</strong><small>在册地面单元</small></div>
       <div><span>可投入</span><strong class="good">{{ store.summary().states.available }}</strong><small>当前班次可用</small></div>
       <div><span>检查中</span><strong>{{ store.summary().states.inspection }}</strong><small>暂不参与编排</small></div>
       <div><span>已锁定</span><strong class="danger">{{ store.summary().states.blocked }}</strong><small>存在阻断风险</small></div>
+      <div><span>复检过期</span><strong class="danger">{{ store.summary().inspection_expired }}</strong><small>阻断完全放行</small></div>
     </section>
 
     <section *ngIf="showCreate" class="create-band">
@@ -65,9 +66,9 @@ import { parseHttpError, useHttp } from '../utils/request';
           <ng-container matColumnDef="unit"><th mat-header-cell *matHeaderCellDef>设备</th><td mat-cell *matCellDef="let row"><strong>{{ row.unit_code }}</strong><small>{{ row.name }}</small></td></ng-container>
           <ng-container matColumnDef="type"><th mat-header-cell *matHeaderCellDef>类型</th><td mat-cell *matCellDef="let row">{{ typeText(row.unit_type) }}</td></ng-container>
           <ng-container matColumnDef="stand"><th mat-header-cell *matHeaderCellDef>机位</th><td mat-cell *matCellDef="let row">{{ row.stand }}</td></ng-container>
-          <ng-container matColumnDef="inspection"><th mat-header-cell *matHeaderCellDef>最近检查</th><td mat-cell *matCellDef="let row">{{ row.last_inspection_at ? (row.last_inspection_at | date:'MM-dd HH:mm') : '未记录' }}</td></ng-container>
+          <ng-container matColumnDef="inspection"><th mat-header-cell *matHeaderCellDef>最近检查</th><td mat-cell *matCellDef="let row"><strong [class.expired-text]="row.inspection_expired">{{ row.last_inspection_at ? (row.last_inspection_at | date:'MM-dd HH:mm') : '未记录' }}</strong><small *ngIf="row.inspection_expired" class="expired-text">复检过期 · 有效期{{ row.inspection_window_hours }}小时</small><small *ngIf="!row.inspection_expired && row.inspection_due_at">有效至 {{ row.inspection_due_at | date:'MM-dd HH:mm' }}</small></td></ng-container>
           <ng-container matColumnDef="state"><th mat-header-cell *matHeaderCellDef>状态</th><td mat-cell *matCellDef="let row"><app-status-badge [value]="row.state"></app-status-badge><small class="note">{{ row.notes }}</small></td></ng-container>
-          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><div class="row-actions"><button *ngIf="canReport && row.state !== 'blocked' && row.state !== 'retired'" mat-stroked-button color="warn" (click)="changeState(row, 'blocked')">锁定</button><button *ngIf="canManage && (row.state === 'blocked' || row.state === 'inspection')" mat-stroked-button (click)="changeState(row, 'available')">恢复可用</button></div></td></ng-container>
+          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><div class="row-actions"><button *ngIf="canReport && row.state !== 'retired'" mat-stroked-button (click)="registerReinspection(row)">登记复检</button><button *ngIf="canReport && row.state !== 'blocked' && row.state !== 'retired'" mat-stroked-button color="warn" (click)="changeState(row, 'blocked')">锁定</button><button *ngIf="canManage && (row.state === 'blocked' || row.state === 'inspection')" mat-stroked-button (click)="changeState(row, 'available')">恢复可用</button></div></td></ng-container>
           <tr mat-header-row *matHeaderRowDef="columns"></tr><tr mat-row *matRowDef="let row; columns: columns"></tr>
         </table>
         <div class="empty" *ngIf="!store.loading() && !store.items().length"><mat-icon>airport_shuttle</mat-icon><strong>暂无设备记录</strong><span>调整筛选条件或登记设备</span></div>
@@ -75,6 +76,11 @@ import { parseHttpError, useHttp } from '../utils/request';
       <mat-paginator [length]="store.total()" [pageIndex]="pagination.page() - 1" [pageSize]="pagination.pageSize()" [pageSizeOptions]="[10, 20, 50, 100]" (page)="pageChanged($event)"></mat-paginator>
     </section>
   `,
+  styles: [`
+    .units-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .expired-text { color: #b42318; }
+    @media (max-width: 700px) { .units-metrics { grid-template-columns: repeat(2, 1fr); } }
+  `],
 })
 export class GroundUnitsPage implements OnInit {
   readonly store = inject(GroundUnitStore);
@@ -120,6 +126,19 @@ export class GroundUnitsPage implements OnInit {
       if (!confirmed) return;
       groundUnitStateApi(this.http, unit.id, state, state === 'blocked' ? '现场检查发现异常，暂停投入' : '复检通过，恢复可用', unit.version).subscribe({
         next: () => { this.reload(); this.snack.open(`设备已${label}`, '关闭', { duration: 2200 }); },
+        error: error => this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }),
+      });
+    });
+  }
+
+  registerReinspection(unit: GroundUnit): void {
+    this.dialog.open(ConfirmDialogComponent, { data: {
+      title: '登记班前复检', confirmText: '登记复检',
+      message: `确认 ${unit.unit_code} 已完成班前复检？系统记录操作人与时间，设备状态保持不变。`,
+    }}).afterClosed().subscribe(confirmed => {
+      if (!confirmed) return;
+      groundUnitReinspectionApi(this.http, unit.id, '').subscribe({
+        next: () => { this.reload(); this.snack.open('复检已登记，有效期重新计算', '关闭', { duration: 2500 }); },
         error: error => this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }),
       });
     });

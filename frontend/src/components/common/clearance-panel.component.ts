@@ -15,6 +15,7 @@ import { EvidenceListComponent } from './evidence-list.component';
       <div *ngIf="decision; else awaiting" class="body">
         <p><strong>决定依据</strong>{{ decision.reason || '等待放行员填写决定依据' }}</p>
         <p *ngIf="decision.restrictions"><strong>运行限制</strong>{{ decision.restrictions }}</p>
+        <p *ngIf="decision.reinspection_conditions"><strong>逾期设备复检条件</strong>{{ decision.reinspection_conditions }}</p>
         <app-evidence-list [items]="decision.evidence || []"></app-evidence-list>
       </div>
       <ng-template #awaiting><p class="awaiting">检查完成后由安全放行员形成决定。</p></ng-template>

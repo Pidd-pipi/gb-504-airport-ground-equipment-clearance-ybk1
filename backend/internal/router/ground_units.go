@@ -15,4 +15,5 @@ func (r *Router) registerGroundUnitRoutes(group *gin.RouterGroup) {
 	routes.GET("/:id", r.groundUnit.Get)
 	routes.POST("", middleware.RequireRole(constants.RoleAdmin, constants.RoleSafetyManager), r.groundUnit.Create)
 	routes.PATCH("/:id/state", middleware.RequireRole(constants.RoleAdmin, constants.RoleSafetyManager, constants.RoleInspector), r.groundUnit.ChangeState)
+	routes.POST("/:id/reinspection", middleware.RequireRole(constants.RoleAdmin, constants.RoleSafetyManager, constants.RoleInspector), r.groundUnit.Reinspection)
 }

@@ -51,13 +51,14 @@ func (s *ClearanceDecisionService) Get(id uint64) (*model.ClearanceDecision, err
 	return decision, err
 }
 
-func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state, restrictions, reason string,
+func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state, restrictions, reinspectionConditions, reason string,
 	evidence []string, requestID, operatorName, ip string) (*model.ClearanceDecision, error) {
 	if !constants.IsValidClearanceState(state) || state == constants.ClearancePending {
 		return nil, util.NewAppError(constants.CodeValidationFailed, "invalid clearance state")
 	}
 	reason = strings.TrimSpace(reason)
 	restrictions = strings.TrimSpace(restrictions)
+	reinspectionConditions = strings.TrimSpace(reinspectionConditions)
 	if reason == "" {
 		return nil, util.NewAppError(constants.CodeValidationFailed, "decision reason is required")
 	}
@@ -70,6 +71,7 @@ func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state
 	}
 	if state == constants.ClearanceCleared {
 		restrictions = ""
+		reinspectionConditions = ""
 	}
 	var decision *model.ClearanceDecision
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -107,22 +109,37 @@ func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state
 				}
 			}
 		}
-		if state == constants.ClearanceCleared {
+		overdue := make([]model.GroundUnit, 0)
+		if state == constants.ClearanceCleared || state == constants.ClearanceRestricted {
+			assigned := make([]model.GroundUnit, 0, len(turnaround.GroundUnitIDs))
 			for _, rawID := range turnaround.GroundUnitIDs {
 				unitID, parseErr := strconv.ParseUint(rawID, 10, 64)
 				if parseErr != nil || unitID == 0 {
 					return util.NewAppError(constants.CodeStateConflict, "turnaround contains an invalid ground unit")
 				}
 				unit, findErr := s.unitRepo.FindByIDTx(tx, unitID)
-				if findErr != nil || unit.State != constants.UnitAvailable {
+				if findErr != nil {
+					return util.NewAppError(constants.CodeStateConflict, "turnaround contains an invalid ground unit")
+				}
+				if state == constants.ClearanceCleared && unit.State != constants.UnitAvailable {
 					return util.NewAppError(constants.CodeStateConflict, "all assigned ground units must be available for full clearance")
 				}
+				assigned = append(assigned, *unit)
 			}
+			overdue = overdueUnits(assigned, turnaround.RiskLevel, time.Now())
+		}
+		if state == constants.ClearanceCleared && len(overdue) > 0 {
+			return util.NewAppError(constants.CodeStateConflict,
+				"re-inspection overdue for ground units "+strings.Join(overdueUnitCodes(overdue), ", ")+"; full clearance is blocked")
+		}
+		if state == constants.ClearanceRestricted && len(overdue) > 0 && reinspectionConditions == "" {
+			return util.NewAppError(constants.CodeValidationFailed, "re-inspection conditions are required for overdue ground units")
 		}
 		previous := current.State
 		current.PreviousState = previous
 		current.State = state
 		current.Restrictions = restrictions
+		current.ReinspectionConditions = reinspectionConditions
 		current.Reason = reason
 		current.Evidence = model.JSONList(evidence)
 		current.OperatorID = operatorID
@@ -138,7 +155,8 @@ func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state
 		}
 		detail, _ := json.Marshal(map[string]any{
 			"previous_state": previous, "state": state, "reason": reason,
-			"restrictions": restrictions, "evidence": evidence, "request_id": requestID,
+			"restrictions": restrictions, "reinspection_conditions": reinspectionConditions,
+			"overdue_units": overdueUnitCodes(overdue), "evidence": evidence, "request_id": requestID,
 		})
 		audit := &model.AuditLog{OperatorID: operatorID, OperatorName: operatorName, Action: "CLEARANCE_TRANSITION",
 			EntityType: "clearance", EntityID: strconv.FormatUint(current.ID, 10), Detail: string(detail), IP: ip, CreatedAt: time.Now()}

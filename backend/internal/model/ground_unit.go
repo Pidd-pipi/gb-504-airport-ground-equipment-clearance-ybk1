@@ -15,6 +15,11 @@ type GroundUnit struct {
 	Version          int        `gorm:"not null;default:1" json:"version"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
+
+	// Re-inspection status computed by the service layer; never persisted.
+	InspectionExpired     bool       `gorm:"-" json:"inspection_expired"`
+	InspectionDueAt       *time.Time `gorm:"-" json:"inspection_due_at"`
+	InspectionWindowHours int        `gorm:"-" json:"inspection_window_hours"`
 }
 
 func (GroundUnit) TableName() string { return "ground_units" }

@@ -11,7 +11,7 @@ export class GroundUnitStore {
   readonly total = signal(0);
   readonly loading = signal(false);
   readonly error = signal('');
-  readonly summary = signal<GroundUnitSummary>({ total: 0, states: { available: 0, inspection: 0, blocked: 0, retired: 0 }, types: {}, dispatchable: 0, unavailable: 0 });
+  readonly summary = signal<GroundUnitSummary>({ total: 0, states: { available: 0, inspection: 0, blocked: 0, retired: 0 }, types: {}, dispatchable: 0, unavailable: 0, inspection_expired: 0 });
   private requestVersion = 0;
 
   constructor(private readonly http: HttpClient) {}

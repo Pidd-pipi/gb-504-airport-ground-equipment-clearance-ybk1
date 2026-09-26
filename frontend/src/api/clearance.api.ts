@@ -17,6 +17,7 @@ export interface ClearancePayload {
   turnaround_id: number;
   state: Exclude<ClearanceState, 'pending'>;
   restrictions: string;
+  reinspection_conditions: string;
   reason: string;
   evidence: string[];
 }

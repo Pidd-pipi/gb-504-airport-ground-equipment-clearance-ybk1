@@ -1,5 +1,7 @@
 package constants
 
+import "time"
+
 // API error codes.
 const (
 	CodeOK                 = 0
@@ -84,6 +86,22 @@ const (
 
 var RiskLevelValues = []string{RiskLow, RiskMedium, RiskHigh, RiskCritical}
 
+// Re-inspection validity windows shared by the equipment desk, turnaround
+// readiness and the clearance gate.
+const (
+	InspectionValidityDefaultHours  = 24
+	InspectionValidityHighRiskHours = 8
+)
+
+// InspectionWindowForRisk maps a turnaround risk level to the re-inspection
+// validity window applied to its assigned ground units.
+func InspectionWindowForRisk(riskLevel string) time.Duration {
+	if riskLevel == RiskHigh || riskLevel == RiskCritical {
+		return InspectionValidityHighRiskHours * time.Hour
+	}
+	return InspectionValidityDefaultHours * time.Hour
+}
+
 const (
 	LogAuditWriteFailed       = "audit log write failed"
 	LogUserLoginSuccess       = "user login success"
@@ -94,6 +112,7 @@ const (
 	LogTurnaroundUpdated      = "turnaround updated"
 	LogGroundUnitCreated      = "ground unit created"
 	LogGroundUnitStateChanged = "ground unit state changed"
+	LogGroundUnitReinspected  = "ground unit re-inspection recorded"
 	LogSafetyCheckCreated     = "safety check created"
 	LogSafetyCheckReviewed    = "safety check reviewed"
 	LogClearanceChanged       = "clearance state changed"

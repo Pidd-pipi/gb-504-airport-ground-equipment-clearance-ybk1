@@ -95,6 +95,25 @@ func (h *GroundUnitHandler) ChangeState(c *gin.Context) {
 	OK(c, unit)
 }
 
+func (h *GroundUnitHandler) Reinspection(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var request dto.GroundUnitReinspectionRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		Fail(c, http.StatusBadRequest, constants.CodeBadRequest, err.Error())
+		return
+	}
+	unit, err := h.svc.RegisterReinspection(id, request.Notes, requestAuditContext(c))
+	if err != nil {
+		handleServiceError(c, h.logger, err, "ground unit re-inspection")
+		return
+	}
+	c.Set("audit_persisted", true)
+	OK(c, unit)
+}
+
 func parseID(c *gin.Context) (uint64, bool) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {

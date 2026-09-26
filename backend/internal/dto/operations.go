@@ -18,10 +18,15 @@ type GroundUnitStateRequest struct {
 	Version int    `json:"version" binding:"required,min=1"`
 }
 
+type GroundUnitReinspectionRequest struct {
+	Notes string `json:"notes" binding:"max=2000"`
+}
+
 type ClearanceDecisionRequest struct {
-	TurnaroundID uint64   `json:"turnaround_id" binding:"required"`
-	State        string   `json:"state" binding:"required,oneof=cleared restricted revoked"`
-	Restrictions string   `json:"restrictions" binding:"max=2000"`
-	Reason       string   `json:"reason" binding:"required,max=2000"`
-	Evidence     []string `json:"evidence" binding:"required,min=1"`
+	TurnaroundID           uint64   `json:"turnaround_id" binding:"required"`
+	State                  string   `json:"state" binding:"required,oneof=cleared restricted revoked"`
+	Restrictions           string   `json:"restrictions" binding:"max=2000"`
+	ReinspectionConditions string   `json:"reinspection_conditions" binding:"max=2000"`
+	Reason                 string   `json:"reason" binding:"required,max=2000"`
+	Evidence               []string `json:"evidence" binding:"required,min=1"`
 }

@@ -64,7 +64,8 @@ func (h *ClearanceDecisionHandler) Decide(c *gin.Context) {
 	}
 	requestID, _ := c.Get("request_id")
 	row, err := h.svc.Decide(request.TurnaroundID, middleware.GetUserID(c), request.State,
-		request.Restrictions, request.Reason, request.Evidence, stringValue(requestID), middleware.GetPhone(c), c.ClientIP())
+		request.Restrictions, request.ReinspectionConditions, request.Reason, request.Evidence,
+		stringValue(requestID), middleware.GetPhone(c), c.ClientIP())
 	if err != nil {
 		handleServiceError(c, h.logger, err, "clearance decision")
 		return

@@ -255,6 +255,9 @@ func (s *TurnaroundService) Readiness(id uint64) (map[string]any, error) {
 		}
 	}
 	unitStates := make(map[string]string, len(row.GroundUnitIDs))
+	window := constants.InspectionWindowForRisk(row.RiskLevel)
+	now := time.Now()
+	expiredUnits := make([]string, 0)
 	for _, rawID := range row.GroundUnitIDs {
 		unitID, parseErr := strconv.ParseUint(rawID, 10, 64)
 		if parseErr != nil {
@@ -270,6 +273,12 @@ func (s *TurnaroundService) Readiness(id uint64) (map[string]any, error) {
 		if unit.State != constants.UnitAvailable {
 			blockers = append(blockers, "ground unit "+unit.UnitCode+" is "+unit.State)
 		}
+		probe := *unit
+		markUnitInspection(&probe, window, now)
+		if probe.InspectionExpired {
+			expiredUnits = append(expiredUnits, unit.UnitCode)
+			blockers = append(blockers, "ground unit "+unit.UnitCode+" re-inspection overdue")
+		}
 	}
 	decision, decisionErr := s.clearanceRepo.FindByTurnaround(id)
 	clearanceState := constants.ClearancePending
@@ -283,5 +292,6 @@ func (s *TurnaroundService) Readiness(id uint64) (map[string]any, error) {
 		"pending_checks": pending, "failed_checks": failed, "unit_states": unitStates,
 		"clearance_state": clearanceState, "ready_for_decision": readyForDecision,
 		"ready_for_full_clearance": readyForFullClearance, "blockers": blockers,
+		"inspection_window_hours": int(window / time.Hour), "expired_units": expiredUnits,
 	}, nil
 }

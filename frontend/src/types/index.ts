@@ -41,6 +41,9 @@ export interface GroundUnit {
   version: number;
   created_at: string;
   updated_at: string;
+  inspection_expired: boolean;
+  inspection_due_at: string | null;
+  inspection_window_hours: number;
 }
 
 export interface GroundUnitSummary {
@@ -49,6 +52,7 @@ export interface GroundUnitSummary {
   types: Record<string, number>;
   dispatchable: number;
   unavailable: number;
+  inspection_expired: number;
 }
 
 export interface Turnaround {
@@ -71,6 +75,21 @@ export interface TurnaroundSummary {
   statuses: Record<Turnaround['status'], number>;
   risks: Record<RiskLevel, number>;
   due_within_two_hours: number;
+}
+
+export interface TurnaroundReadiness {
+  turnaround_id: number;
+  flight_no: string;
+  status: string;
+  pending_checks: number;
+  failed_checks: number;
+  unit_states: Record<string, string>;
+  clearance_state: ClearanceState;
+  ready_for_decision: boolean;
+  ready_for_full_clearance: boolean;
+  blockers: string[];
+  expired_units: string[];
+  inspection_window_hours: number;
 }
 
 export interface SafetyCheck {
@@ -101,6 +120,7 @@ export interface ClearanceDecision {
   state: ClearanceState;
   previous_state: ClearanceState | '';
   restrictions: string;
+  reinspection_conditions: string;
   reason: string;
   evidence: string[];
   operator_id: number;
