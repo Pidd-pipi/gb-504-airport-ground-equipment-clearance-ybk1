@@ -36,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err := db.AutoMigrate(&model.User{}, &model.GroundUnit{}, &model.Turnaround{},
-		&model.SafetyCheck{}, &model.ClearanceDecision{}, &model.AuditLog{}); err != nil {
+		&model.SafetyCheck{}, &model.ClearanceDecision{}, &model.ReinspectionRecord{}, &model.AuditLog{}); err != nil {
 		logger.Error("database migration failed", "error", err.Error())
 		os.Exit(1)
 	}
@@ -61,17 +61,20 @@ func main() {
 	turnaroundRepo := repository.NewTurnaroundRepository(db)
 	checkRepo := repository.NewSafetyCheckRepository(db)
 	clearanceRepo := repository.NewClearanceDecisionRepository(db)
+	reinspectionRepo := repository.NewReinspectionRepository(db)
 
 	userSvc := service.NewUserService(userRepo, logger)
-	unitSvc := service.NewGroundUnitService(db, unitRepo, turnaroundRepo, clearanceRepo, logger)
-	turnaroundSvc := service.NewTurnaroundService(db, turnaroundRepo, checkRepo, clearanceRepo, unitRepo, userRepo, logger)
+	unitSvc := service.NewGroundUnitService(db, unitRepo, turnaroundRepo, clearanceRepo, reinspectionRepo, logger)
+	reinspectionSvc := service.NewReinspectionService(db, reinspectionRepo, unitRepo, logger)
+	turnaroundSvc := service.NewTurnaroundService(db, turnaroundRepo, checkRepo, clearanceRepo, unitRepo, reinspectionRepo, userRepo, logger)
 	checkSvc := service.NewSafetyCheckService(db, checkRepo, turnaroundRepo, clearanceRepo, unitRepo, logger)
-	clearanceSvc := service.NewClearanceDecisionService(db, clearanceRepo, turnaroundRepo, checkRepo, unitRepo, logger)
+	clearanceSvc := service.NewClearanceDecisionService(db, clearanceRepo, turnaroundRepo, checkRepo, unitRepo, reinspectionRepo, logger)
 
 	engine := router.New(cfg, db, redisClient, logger,
 		handler.NewUserHandler(userSvc, logger),
 		handler.NewTurnaroundHandler(turnaroundSvc, logger),
 		handler.NewGroundUnitHandler(unitSvc, logger),
+		handler.NewReinspectionHandler(reinspectionSvc, logger),
 		handler.NewSafetyCheckHandler(checkSvc, logger),
 		handler.NewClearanceDecisionHandler(clearanceSvc, logger),
 		handler.NewAuditLogHandler(db, logger),

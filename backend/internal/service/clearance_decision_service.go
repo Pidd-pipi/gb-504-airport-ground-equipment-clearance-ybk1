@@ -17,18 +17,20 @@ import (
 )
 
 type ClearanceDecisionService struct {
-	db             *gorm.DB
-	repo           *repository.ClearanceDecisionRepository
-	turnaroundRepo *repository.TurnaroundRepository
-	checkRepo      *repository.SafetyCheckRepository
-	unitRepo       *repository.GroundUnitRepository
-	logger         *slog.Logger
+	db               *gorm.DB
+	repo             *repository.ClearanceDecisionRepository
+	turnaroundRepo   *repository.TurnaroundRepository
+	checkRepo        *repository.SafetyCheckRepository
+	unitRepo         *repository.GroundUnitRepository
+	reinspectionRepo *repository.ReinspectionRepository
+	logger           *slog.Logger
 }
 
 func NewClearanceDecisionService(db *gorm.DB, repo *repository.ClearanceDecisionRepository,
 	turnaroundRepo *repository.TurnaroundRepository, checkRepo *repository.SafetyCheckRepository,
-	unitRepo *repository.GroundUnitRepository, logger *slog.Logger) *ClearanceDecisionService {
-	return &ClearanceDecisionService{db: db, repo: repo, turnaroundRepo: turnaroundRepo, checkRepo: checkRepo, unitRepo: unitRepo, logger: logger}
+	unitRepo *repository.GroundUnitRepository, reinspectionRepo *repository.ReinspectionRepository, logger *slog.Logger) *ClearanceDecisionService {
+	return &ClearanceDecisionService{db: db, repo: repo, turnaroundRepo: turnaroundRepo, checkRepo: checkRepo,
+		unitRepo: unitRepo, reinspectionRepo: reinspectionRepo, logger: logger}
 }
 
 func (s *ClearanceDecisionService) List(page, pageSize int, state string) ([]model.ClearanceDecision, int64, error) {
@@ -107,15 +109,43 @@ func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state
 				}
 			}
 		}
-		if state == constants.ClearanceCleared {
-			for _, rawID := range turnaround.GroundUnitIDs {
-				unitID, parseErr := strconv.ParseUint(rawID, 10, 64)
-				if parseErr != nil || unitID == 0 {
-					return util.NewAppError(constants.CodeStateConflict, "turnaround contains an invalid ground unit")
+		validities := []UnitValidity{}
+		expiredUnits := make([]UnitValidity, 0)
+		if state != constants.ClearanceRevoked {
+			// Emergency revocation must never be blocked by stale inspections.
+			var validityErr error
+			validities, _, validityErr = LoadAssignedUnitValidity(tx, s.unitRepo, s.reinspectionRepo, turnaround)
+			if validityErr != nil {
+				if errors.Is(validityErr, repository.ErrNotFound) {
+					return util.NewAppError(constants.CodeStateConflict, "turnaround contains a missing ground unit")
 				}
-				unit, findErr := s.unitRepo.FindByIDTx(tx, unitID)
-				if findErr != nil || unit.State != constants.UnitAvailable {
-					return util.NewAppError(constants.CodeStateConflict, "all assigned ground units must be available for full clearance")
+				return util.NewAppError(constants.CodeStateConflict, validityErr.Error())
+			}
+			for _, validity := range validities {
+				if validity.Expired {
+					expiredUnits = append(expiredUnits, validity)
+				}
+			}
+			if state == constants.ClearanceCleared {
+				for _, validity := range validities {
+					if validity.UnitState != constants.UnitAvailable {
+						return util.NewAppError(constants.CodeStateConflict, "all assigned ground units must be available for full clearance")
+					}
+					if validity.Expired {
+						return util.NewAppError(constants.CodeStateConflict, validity.Reason+"，复检过期设备禁止完全放行")
+					}
+				}
+			}
+			if state == constants.ClearanceRestricted && len(expiredUnits) > 0 {
+				if !containsReinspectionCondition(restrictions) {
+					return util.NewAppError(constants.CodeValidationFailed,
+						"限制放行必须写清逾期设备的复检条件（复检通过、复检合格、完成复检等）")
+				}
+				for _, validity := range expiredUnits {
+					if !strings.Contains(restrictions, validity.UnitCode) {
+						return util.NewAppError(constants.CodeValidationFailed,
+							"限制放行必须在运行条件中写明每台逾期设备（"+validity.UnitCode+"）的复检条件")
+					}
 				}
 			}
 		}
@@ -136,10 +166,15 @@ func (s *ClearanceDecisionService) Decide(turnaroundID, operatorID uint64, state
 		if err := s.turnaroundRepo.SaveTx(tx, turnaround); err != nil {
 			return err
 		}
-		detail, _ := json.Marshal(map[string]any{
+		auditDetail := map[string]any{
 			"previous_state": previous, "state": state, "reason": reason,
 			"restrictions": restrictions, "evidence": evidence, "request_id": requestID,
-		})
+		}
+		if state != constants.ClearanceRevoked {
+			auditDetail["unit_reinspection_validity"] = validities
+			auditDetail["expired_unit_count"] = len(expiredUnits)
+		}
+		detail, _ := json.Marshal(auditDetail)
 		audit := &model.AuditLog{OperatorID: operatorID, OperatorName: operatorName, Action: "CLEARANCE_TRANSITION",
 			EntityType: "clearance", EntityID: strconv.FormatUint(current.ID, 10), Detail: string(detail), IP: ip, CreatedAt: time.Now()}
 		if err := tx.Create(audit).Error; err != nil {
@@ -160,4 +195,15 @@ func allowedClearanceTransition(from, to string) bool {
 		return to == constants.ClearanceCleared || to == constants.ClearanceRestricted || to == constants.ClearanceRevoked
 	}
 	return (from == constants.ClearanceCleared || from == constants.ClearanceRestricted) && to == constants.ClearanceRevoked
+}
+
+// containsReinspectionCondition requires an explicit re-inspection condition,
+// not just an equipment code reference.
+func containsReinspectionCondition(restrictions string) bool {
+	for _, keyword := range []string{"复检", "重新检查", "复查"} {
+		if strings.Contains(restrictions, keyword) {
+			return true
+		}
+	}
+	return false
 }

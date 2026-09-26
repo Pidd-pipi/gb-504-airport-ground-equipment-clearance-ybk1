@@ -16,25 +16,26 @@ import (
 )
 
 type Router struct {
-	cfg        *config.Config
-	db         *gorm.DB
-	logger     *slog.Logger
-	limiter    *middleware.RateLimiter
-	redis      *redis.Client
-	user       *handler.UserHandler
-	turnaround *handler.TurnaroundHandler
-	groundUnit *handler.GroundUnitHandler
-	check      *handler.SafetyCheckHandler
-	clearance  *handler.ClearanceDecisionHandler
-	audit      *handler.AuditLogHandler
+	cfg          *config.Config
+	db           *gorm.DB
+	logger       *slog.Logger
+	limiter      *middleware.RateLimiter
+	redis        *redis.Client
+	user         *handler.UserHandler
+	turnaround   *handler.TurnaroundHandler
+	groundUnit   *handler.GroundUnitHandler
+	reinspection *handler.ReinspectionHandler
+	check        *handler.SafetyCheckHandler
+	clearance    *handler.ClearanceDecisionHandler
+	audit        *handler.AuditLogHandler
 }
 
 func New(cfg *config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog.Logger, user *handler.UserHandler,
 	turnaround *handler.TurnaroundHandler, groundUnit *handler.GroundUnitHandler,
-	check *handler.SafetyCheckHandler, clearance *handler.ClearanceDecisionHandler,
-	audit *handler.AuditLogHandler) *Router {
+	reinspection *handler.ReinspectionHandler, check *handler.SafetyCheckHandler,
+	clearance *handler.ClearanceDecisionHandler, audit *handler.AuditLogHandler) *Router {
 	return &Router{cfg: cfg, db: db, logger: logger, redis: redisClient, limiter: middleware.NewRateLimiter(cfg.RateLimitPerMinute, redisClient),
-		user: user, turnaround: turnaround, groundUnit: groundUnit, check: check, clearance: clearance, audit: audit}
+		user: user, turnaround: turnaround, groundUnit: groundUnit, reinspection: reinspection, check: check, clearance: clearance, audit: audit}
 }
 
 func (r *Router) Setup() *gin.Engine {

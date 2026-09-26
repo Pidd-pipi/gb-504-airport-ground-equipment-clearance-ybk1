@@ -1,25 +1,27 @@
 import { CommonModule } from '@angular/common';
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { clearanceDecideApi } from '../api/clearance.api';
+import { turnaroundDetailApi } from '../api/turnaround.api';
 import { ClearancePanelComponent } from '../components/common/clearance-panel.component';
 import { ConfirmDialogComponent } from '../components/common/confirm-dialog.component';
 import { StatusBadgeComponent } from '../components/common/status-badge.component';
+import { TurnaroundReadinessComponent } from '../components/common/turnaround-readiness.component';
 import { CLEARANCE_STATE_TEXT, ROLE } from '../constants/enums';
 import { useAuth } from '../hooks/use-auth';
 import { usePagination } from '../hooks/use-pagination';
 import { ClearanceStore } from '../stores/clearance.store';
 import { TurnaroundStore } from '../stores/turnaround.store';
-import { ClearanceDecision, ClearanceState } from '../types';
+import { ClearanceDecision, ClearanceState, Turnaround, TurnaroundReadiness } from '../types';
 import { parseHttpError, useHttp } from '../utils/request';
 
 @Component({
@@ -27,11 +29,12 @@ import { parseHttpError, useHttp } from '../utils/request';
   standalone: true,
   imports: [
     CommonModule, ReactiveFormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule,
-    MatInputModule, MatPaginatorModule, MatProgressBarModule, MatSelectModule, MatSnackBarModule, ClearancePanelComponent, StatusBadgeComponent,
+    MatInputModule, MatPaginatorModule, MatProgressBarModule, MatSelectModule, MatSnackBarModule,
+    ClearancePanelComponent, StatusBadgeComponent, TurnaroundReadinessComponent,
   ],
   template: `
     <header class="page-head">
-      <div><p>CLEARANCE REVIEW</p><h1>安全放行审核</h1><span>检查证据完整后形成放行、限制或撤销决定</span></div>
+      <div><p>CLEARANCE REVIEW</p><h1>安全放行审核</h1><span>检查证据与设备复检有效期同时满足后才能完全放行</span></div>
       <div class="head-status"><mat-icon>policy</mat-icon>状态迁移全审计</div>
     </header>
     <section class="metrics">
@@ -63,14 +66,16 @@ import { parseHttpError, useHttp } from '../utils/request';
           <span><small>前一状态</small>{{ selected.previous_state ? stateText[selected.previous_state] : '首次决定' }}</span>
           <span><small>操作人员</small>{{ selected.operator_id ? '#' + selected.operator_id : '待分配' }}</span>
         </div>
+        <app-turnaround-readiness [turnaround]="selectedTurnaround()" (dataChange)="onReadiness($event)"></app-turnaround-readiness>
         <form *ngIf="canManage && selected.state !== 'revoked'" [formGroup]="form" (ngSubmit)="decide()" class="decision-form">
           <h3>{{ selected.state === 'pending' ? '形成放行决定' : '变更为撤销状态' }}</h3>
           <mat-form-field appearance="outline"><mat-label>目标状态</mat-label><mat-select formControlName="state"><mat-option *ngFor="let state of targetStates" [value]="state">{{ stateText[state] }}</mat-option></mat-select></mat-form-field>
-          <mat-form-field appearance="outline" *ngIf="form.controls.state.value === 'restricted'"><mat-label>运行限制</mat-label><textarea matInput rows="2" formControlName="restrictions" placeholder="例如：仅允许低速牵引，不得接入地面电源"></textarea></mat-form-field>
+          <div class="form-warning" *ngIf="form.controls.state.value === 'cleared' && readiness() && !readiness()!.ready_for_full_clearance"><mat-icon>block</mat-icon>复检过期或检查未闭环，完全放行已被拦截，请选择限制放行或撤销。</div>
+          <mat-form-field appearance="outline" *ngIf="form.controls.state.value === 'restricted'"><mat-label>运行限制（须写清逾期设备复检条件）</mat-label><textarea matInput rows="3" formControlName="restrictions" [placeholder]="restrictedPlaceholder()"></textarea></mat-form-field>
           <mat-form-field appearance="outline"><mat-label>决定依据</mat-label><textarea matInput rows="3" formControlName="reason"></textarea></mat-form-field>
           <mat-form-field appearance="outline"><mat-label>证据编号 / 文件名</mat-label><input matInput formControlName="evidence" placeholder="多个证据用逗号分隔"></mat-form-field>
           <div class="form-warning" *ngIf="form.controls.state.value === 'revoked'"><mat-icon>warning</mat-icon>撤销后不可恢复，请确认已通知现场调度。</div>
-          <button mat-flat-button type="submit" [class.danger-button]="form.controls.state.value === 'revoked'" [disabled]="form.invalid || saving"><mat-icon>gavel</mat-icon>记录决定</button>
+          <button mat-flat-button type="submit" [class.danger-button]="form.controls.state.value === 'revoked'" [disabled]="form.invalid || saving || (form.controls.state.value === 'cleared' && readinessBlocked())"><mat-icon>gavel</mat-icon>{{ form.controls.state.value === 'cleared' && readinessBlocked() ? '完全放行已被拦截' : '记录决定' }}</button>
         </form>
       </aside>
       <ng-template #selectionHint><aside class="decision-pane placeholder"><mat-icon>verified_user</mat-icon><strong>选择放行记录</strong><span>查看当前状态并形成安全决定</span></aside></ng-template>
@@ -89,6 +94,8 @@ export class ClearancePage implements OnInit {
   readonly canManage = this.auth.hasRole(ROLE.ADMIN, ROLE.SAFETY_MANAGER);
   readonly stateText = CLEARANCE_STATE_TEXT;
   selected: ClearanceDecision | null = null;
+  readonly selectedTurnaround = signal<Turnaround | null>(null);
+  readonly readiness = signal<TurnaroundReadiness | null>(null);
   filter = '';
   saving = false;
   targetStates: Array<Exclude<ClearanceState, 'pending'>> = ['cleared', 'restricted', 'revoked'];
@@ -102,21 +109,54 @@ export class ClearancePage implements OnInit {
     const row = this.turnarounds.items().find(item => item.id === turnaroundId);
     return row ? `${row.flight_no} / ${row.stand}` : `周转 #${turnaroundId}`;
   }
-  reload(): void { this.selected = null; this.store.load(this.pagination.page(), this.pagination.pageSize(), this.filter); }
+  reload(): void { this.selected = null; this.selectedTurnaround.set(null); this.readiness.set(null); this.store.load(this.pagination.page(), this.pagination.pageSize(), this.filter); }
   resetAndLoad(): void { this.pagination.reset(); this.reload(); }
   pageChanged(event: PageEvent): void { this.selected = null; this.pagination.setPage(event.pageIndex + 1); this.pagination.pageSize.set(event.pageSize); this.reload(); }
+
   select(item: ClearanceDecision): void {
     this.selected = item;
     this.targetStates = item.state === 'pending' ? ['cleared', 'restricted', 'revoked'] : ['revoked'];
     this.form.reset({ state: this.targetStates[0], restrictions: '', reason: '', evidence: '' });
+    this.readiness.set(null);
+    const cached = this.turnarounds.items().find(row => row.id === item.turnaround_id) ?? null;
+    this.selectedTurnaround.set(cached);
+    turnaroundDetailApi(this.http, item.turnaround_id).subscribe({
+      next: detail => this.selectedTurnaround.set(detail.turnaround),
+      error: () => undefined,
+    });
+  }
+
+  onReadiness(readiness: TurnaroundReadiness): void { this.readiness.set(readiness); }
+  readinessBlocked(): boolean { return this.readiness() !== null && !this.readiness()!.ready_for_full_clearance; }
+  restrictedPlaceholder(): string {
+    const codes = this.readiness()?.expired_unit_codes ?? [];
+    return codes.length
+      ? `例如：${codes.join('、')} 仅限低速牵引，使用前须完成复检并登记通过证据`
+      : '例如：仅允许低速牵引，不得接入地面电源';
   }
 
   decide(): void {
     if (!this.selected || this.form.invalid) return;
     const value = this.form.getRawValue();
+    const readiness = this.readiness();
     if (value.state === 'restricted' && !value.restrictions.trim()) {
       this.snack.open('限制放行必须填写运行限制', '关闭', { duration: 3200 });
       return;
+    }
+    if (value.state === 'cleared' && readiness && !readiness.ready_for_full_clearance) {
+      this.snack.open('存在复检过期设备或未闭环检查，不能完全放行', '关闭', { duration: 4000 });
+      return;
+    }
+    if (value.state === 'restricted' && readiness) {
+      if (readiness.expired_unit_codes.length && !/复检|重新检查|复查/.test(value.restrictions)) {
+        this.snack.open('运行条件必须写清逾期设备的复检条件（如：复检通过后方可使用）', '关闭', { duration: 4500 });
+        return;
+      }
+      const missing = readiness.expired_unit_codes.filter(code => !value.restrictions.includes(code));
+      if (missing.length) {
+        this.snack.open(`运行条件必须写清逾期设备复检条件，缺少：${missing.join('、')}`, '关闭', { duration: 4500 });
+        return;
+      }
     }
     const danger = value.state === 'revoked';
     this.dialog.open(ConfirmDialogComponent, { data: {

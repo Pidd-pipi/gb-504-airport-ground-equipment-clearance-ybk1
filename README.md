@@ -28,10 +28,10 @@ docker compose up -d --build
 ## 业务能力
 
 - `/turnarounds`：建立航班周转阶段，分配地面设备和首个检查项，跟踪周转状态与风险等级。
-- `/ground-units`：登记牵引车、地面电源、传送带等设备，维护 `available / inspection / blocked / retired` 状态。
+- `/ground-units`：登记牵引车、地面电源、传送带等设备，维护 `available / inspection / blocked / retired` 状态；设备页标出复检有效期过期（普通风险航班 24 小时、高/严重风险航班 8 小时），检查员可登记复检而不改变设备状态。
 - `/checks`：逐项记录检查结论、说明和证据；检查复核使用事务锁且结论不可改写，未处理或失败检查会阻断完全放行。
-- `/clearance`：形成 `cleared / restricted / revoked` 决定；完全放行同时要求全部关联设备可用，限制放行必须填写运行条件，紧急撤销不受未完成检查阻断。
-- `/audit`：查询所有写操作；放行状态迁移额外保存前态、后态、依据、证据和 request id。
+- `/clearance`：形成 `cleared / restricted / revoked` 决定；完全放行同时要求全部关联设备可用且复检在有效期内，限制放行必须填写运行条件并写清每台逾期设备的复检条件，紧急撤销不受未完成检查或过期复检阻断。
+- `/audit`：查询所有写操作；复检登记保存操作人、时间、证据和设备状态未变说明，放行状态迁移额外保存前态、后态、依据、证据、复检有效期明细和 request id。
 
 JWT 与 RBAC 同时覆盖路由和页面按钮。系统不开放匿名注册，只有管理员能通过受保护的用户接口创建账号和指定角色。管理员、安全放行员可建立周转和形成决定；检查员可提交检查结论并上报设备异常，但不能自行恢复或退役设备；普通操作员拥有只读视图。后端还提供统一错误响应、请求追踪、限流和结构化日志。
 
@@ -64,8 +64,11 @@ docker-compose.yml
 | GET / PUT | `/users/me` | 当前用户 / 修改姓名 | 登录 |
 | GET / POST | `/users` | 用户列表 / 管理员创建账号 | 管理角色 / 管理员 |
 | GET / POST | `/ground-units` | 查询 / 登记设备 | 登录 / 管理角色 |
+| GET | `/ground-units/:id/reinspections` | 设备复检记录 | 登录 |
+| POST | `/ground-units/:id/reinspections` | 检查员登记复检（不改设备状态） | 管理、检查角色 |
 | PATCH | `/ground-units/:id/state` | 设备状态迁移（带版本号） | 管理、检查角色 |
-| GET / POST | `/turnarounds` | 查询 / 建立周转 | 登录 / 管理角色 |
+| GET | `/turnarounds` | 查询 / 建立周转 | 登录 / 管理角色 |
+| GET | `/turnarounds/:id/readiness` | 周转放行条件（含复检有效期拦截） | 登录 |
 | PATCH | `/turnarounds/:id/status` | 周转状态迁移（带版本号） | 管理角色 |
 | GET / POST | `/checks` | 查询 / 增加检查项 | 登录 / 检查角色 |
 | PATCH | `/checks/:id/review` | 提交结论和证据 | 检查角色 |

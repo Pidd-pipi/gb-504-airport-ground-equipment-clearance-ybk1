@@ -15,6 +15,13 @@ type GroundUnit struct {
 	Version          int        `gorm:"not null;default:1" json:"version"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
+
+	// Computed view fields populated by the service layer; not persisted.
+	LatestReinspection *ReinspectionRecord `gorm:"-" json:"latest_reinspection,omitempty"`
+	// Validity flags are evaluated for the 24h standard window and the 8h
+	// high/critical risk window so the equipment page can mark expiry.
+	Expired24h bool `gorm:"-" json:"expired_24h"`
+	Expired8h  bool `gorm:"-" json:"expired_8h"`
 }
 
 func (GroundUnit) TableName() string { return "ground_units" }

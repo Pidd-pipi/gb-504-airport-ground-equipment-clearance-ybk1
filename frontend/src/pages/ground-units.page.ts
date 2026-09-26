@@ -13,6 +13,7 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTableModule } from '@angular/material/table';
 import { groundUnitCreateApi, groundUnitStateApi } from '../api/ground-unit.api';
 import { ConfirmDialogComponent } from '../components/common/confirm-dialog.component';
+import { ReinspectionDialogComponent } from '../components/common/reinspection-dialog.component';
 import { StatusBadgeComponent } from '../components/common/status-badge.component';
 import { ROLE, UNIT_STATE_TEXT } from '../constants/enums';
 import { useAuth } from '../hooks/use-auth';
@@ -26,18 +27,19 @@ import { parseHttpError, useHttp } from '../utils/request';
   standalone: true,
   imports: [
     CommonModule, ReactiveFormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule,
-    MatInputModule, MatPaginatorModule, MatProgressBarModule, MatSelectModule, MatSnackBarModule, MatTableModule, StatusBadgeComponent,
+    MatInputModule, MatPaginatorModule, MatProgressBarModule, MatSelectModule, MatSnackBarModule, MatTableModule,
+    ReinspectionDialogComponent, StatusBadgeComponent,
   ],
   template: `
     <header class="page-head">
-      <div><p>GROUND UNIT CONTROL</p><h1>地面设备状态</h1><span>设备可用性直接参与周转编排与放行判断</span></div>
+      <div><p>GROUND UNIT CONTROL</p><h1>地面设备状态</h1><span>班前检查仅作展示；复检有效期（普通 24h / 高严重风险 8h）接入周转与放行</span></div>
       <button *ngIf="canManage" mat-flat-button (click)="showCreate = !showCreate"><mat-icon>{{ showCreate ? 'close' : 'add' }}</mat-icon>{{ showCreate ? '收起' : '登记设备' }}</button>
     </header>
     <section class="metrics">
       <div><span>设备总数</span><strong>{{ store.summary().total }}</strong><small>在册地面单元</small></div>
       <div><span>可投入</span><strong class="good">{{ store.summary().states.available }}</strong><small>当前班次可用</small></div>
       <div><span>检查中</span><strong>{{ store.summary().states.inspection }}</strong><small>暂不参与编排</small></div>
-      <div><span>已锁定</span><strong class="danger">{{ store.summary().states.blocked }}</strong><small>存在阻断风险</small></div>
+      <div><span>复检过期</span><strong class="danger">{{ store.summary().reinspection_expired_24h }}</strong><small>超 24h；其中 {{ store.summary().reinspection_expired_8h }} 台连 8h 窗口也超</small></div>
     </section>
 
     <section *ngIf="showCreate" class="create-band">
@@ -65,16 +67,41 @@ import { parseHttpError, useHttp } from '../utils/request';
           <ng-container matColumnDef="unit"><th mat-header-cell *matHeaderCellDef>设备</th><td mat-cell *matCellDef="let row"><strong>{{ row.unit_code }}</strong><small>{{ row.name }}</small></td></ng-container>
           <ng-container matColumnDef="type"><th mat-header-cell *matHeaderCellDef>类型</th><td mat-cell *matCellDef="let row">{{ typeText(row.unit_type) }}</td></ng-container>
           <ng-container matColumnDef="stand"><th mat-header-cell *matHeaderCellDef>机位</th><td mat-cell *matCellDef="let row">{{ row.stand }}</td></ng-container>
-          <ng-container matColumnDef="inspection"><th mat-header-cell *matHeaderCellDef>最近检查</th><td mat-cell *matCellDef="let row">{{ row.last_inspection_at ? (row.last_inspection_at | date:'MM-dd HH:mm') : '未记录' }}</td></ng-container>
+          <ng-container matColumnDef="inspection">
+            <th mat-header-cell *matHeaderCellDef>班前检查 / 最近复检</th>
+            <td mat-cell *matCellDef="let row">
+              <small class="check-time">班前 {{ row.last_inspection_at ? (row.last_inspection_at | date:'MM-dd HH:mm') : '未记录' }}</small>
+              <small class="check-time">复检 {{ row.latest_reinspection ? (row.latest_reinspection.inspected_at | date:'MM-dd HH:mm') + ' · ' + latestResultText(row.latest_reinspection.result) : '未登记' }}</small>
+              <span class="expiry-tag expiry-24" *ngIf="row.state === 'available' && row.expired_24h"><mat-icon>error</mat-icon>复检过期（超 24h）</span>
+              <span class="expiry-tag expiry-8" *ngIf="row.state === 'available' && !row.expired_24h && row.expired_8h"><mat-icon>schedule</mat-icon>高风险航班 8h 已超</span>
+            </td>
+          </ng-container>
           <ng-container matColumnDef="state"><th mat-header-cell *matHeaderCellDef>状态</th><td mat-cell *matCellDef="let row"><app-status-badge [value]="row.state"></app-status-badge><small class="note">{{ row.notes }}</small></td></ng-container>
-          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><div class="row-actions"><button *ngIf="canReport && row.state !== 'blocked' && row.state !== 'retired'" mat-stroked-button color="warn" (click)="changeState(row, 'blocked')">锁定</button><button *ngIf="canManage && (row.state === 'blocked' || row.state === 'inspection')" mat-stroked-button (click)="changeState(row, 'available')">恢复可用</button></div></td></ng-container>
-          <tr mat-header-row *matHeaderRowDef="columns"></tr><tr mat-row *matRowDef="let row; columns: columns"></tr>
+          <ng-container matColumnDef="actions">
+            <th mat-header-cell *matHeaderCellDef></th>
+            <td mat-cell *matCellDef="let row">
+              <div class="row-actions">
+                <button *ngIf="canInspect && row.state !== 'retired'" mat-stroked-button color="primary" (click)="registerReinspection(row)"><mat-icon>fact_check</mat-icon>登记复检</button>
+                <button *ngIf="canReport && row.state !== 'blocked' && row.state !== 'retired'" mat-stroked-button color="warn" (click)="changeState(row, 'blocked')">锁定</button>
+                <button *ngIf="canManage && (row.state === 'blocked' || row.state === 'inspection')" mat-stroked-button (click)="changeState(row, 'available')">恢复可用</button>
+              </div>
+            </td>
+          </ng-container>
+          <tr mat-header-row *matHeaderRowDef="columns"></tr><tr mat-row *matRowDef="let row; columns: columns" [class.row-expired]="row.state === 'available' && row.expired_24h"></tr>
         </table>
         <div class="empty" *ngIf="!store.loading() && !store.items().length"><mat-icon>airport_shuttle</mat-icon><strong>暂无设备记录</strong><span>调整筛选条件或登记设备</span></div>
       </div>
       <mat-paginator [length]="store.total()" [pageIndex]="pagination.page() - 1" [pageSize]="pagination.pageSize()" [pageSizeOptions]="[10, 20, 50, 100]" (page)="pageChanged($event)"></mat-paginator>
     </section>
   `,
+  styles: [`
+    .check-time { display: block; color: #6d7e85; }
+    .expiry-tag { display: inline-flex; align-items: center; gap: 3px; margin-top: 3px; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .expiry-tag mat-icon { font-size: 14px; width: 14px; height: 14px; }
+    .expiry-24 { background: #fdecea; color: #b42318; }
+    .expiry-8 { background: #fff4d6; color: #8a5b00; }
+    tr.row-expired { background: #fff8f7; }
+  `],
 })
 export class GroundUnitsPage implements OnInit {
   readonly store = inject(GroundUnitStore);
@@ -86,6 +113,7 @@ export class GroundUnitsPage implements OnInit {
   readonly pagination = usePagination(20);
   readonly canManage = this.auth.hasRole(ROLE.ADMIN, ROLE.SAFETY_MANAGER);
   readonly canReport = this.auth.hasRole(ROLE.ADMIN, ROLE.SAFETY_MANAGER, ROLE.INSPECTOR);
+  readonly canInspect = this.auth.hasRole(ROLE.ADMIN, ROLE.SAFETY_MANAGER, ROLE.INSPECTOR);
   readonly columns = ['unit', 'type', 'stand', 'inspection', 'state', 'actions'];
   readonly states: UnitState[] = ['available', 'inspection', 'blocked', 'retired'];
   readonly stateText = UNIT_STATE_TEXT;
@@ -103,6 +131,7 @@ export class GroundUnitsPage implements OnInit {
   resetAndLoad(): void { this.pagination.reset(); this.reload(); }
   pageChanged(event: PageEvent): void { this.pagination.setPage(event.pageIndex + 1); this.pagination.pageSize.set(event.pageSize); this.reload(); }
   typeText(type: string): string { return ({ tug: '牵引车', gpu: '地面电源', belt_loader: '行李传送带', water_service: '清水车', catering: '配餐车' } as Record<string, string>)[type] || type; }
+  latestResultText(result: string): string { return result === 'passed' ? '通过' : result === 'failed' ? '未通过' : result; }
 
   create(): void {
     if (this.form.invalid) return;
@@ -111,6 +140,12 @@ export class GroundUnitsPage implements OnInit {
     groundUnitCreateApi(this.http, { ...value, unit_code: value.unit_code.trim().toUpperCase(), stand: value.stand.trim().toUpperCase() }).subscribe({
       next: () => { this.saving = false; this.showCreate = false; this.form.reset({ unit_code: '', name: '', unit_type: 'tug', stand: '', state: 'available', notes: '' }); this.reload(); this.snack.open('设备已登记', '关闭', { duration: 2200 }); },
       error: error => { this.saving = false; this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }); },
+    });
+  }
+
+  registerReinspection(unit: GroundUnit): void {
+    this.dialog.open(ReinspectionDialogComponent, { data: { unit } }).afterClosed().subscribe(record => {
+      if (record) this.reload();
     });
   }
 

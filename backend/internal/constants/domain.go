@@ -1,5 +1,7 @@
 package constants
 
+import "time"
+
 // API error codes.
 const (
 	CodeOK                 = 0
@@ -75,6 +77,21 @@ const (
 
 var CheckResultValues = []string{CheckPending, CheckPassed, CheckFailed}
 
+// Re-inspection validity windows. Normal flights require a fresh check within
+// 24 hours; high and critical risk flights tighten the window to 8 hours.
+const (
+	ReinspectionWindowStandard = 24 * time.Hour
+	ReinspectionWindowHighRisk = 8 * time.Hour
+)
+
+// ReinspectionPassed is the only outcome that refreshes a unit's validity anchor.
+const (
+	ReinspectionPassed = "passed"
+	ReinspectionFailed = "failed"
+)
+
+var ReinspectionResultValues = []string{ReinspectionPassed, ReinspectionFailed}
+
 const (
 	RiskLow      = "low"
 	RiskMedium   = "medium"
@@ -94,6 +111,7 @@ const (
 	LogTurnaroundUpdated      = "turnaround updated"
 	LogGroundUnitCreated      = "ground unit created"
 	LogGroundUnitStateChanged = "ground unit state changed"
+	LogGroundUnitReinspected  = "ground unit reinspection recorded"
 	LogSafetyCheckCreated     = "safety check created"
 	LogSafetyCheckReviewed    = "safety check reviewed"
 	LogClearanceChanged       = "clearance state changed"

@@ -2,6 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, inject, OnInit } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -13,6 +14,7 @@ import { MatTableModule } from '@angular/material/table';
 import { turnaroundCreateApi, turnaroundStatusApi } from '../api/turnaround.api';
 import { RiskBadgeComponent } from '../components/common/risk-badge.component';
 import { StatusBadgeComponent } from '../components/common/status-badge.component';
+import { TurnaroundDetailDialogComponent } from '../components/common/turnaround-detail-dialog.component';
 import { ROLE } from '../constants/enums';
 import { useAuth } from '../hooks/use-auth';
 import { usePagination } from '../hooks/use-pagination';
@@ -24,8 +26,9 @@ import { parseHttpError, useHttp } from '../utils/request';
   selector: 'app-turnarounds-page',
   standalone: true,
   imports: [
-    CommonModule, ReactiveFormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule,
-    MatProgressBarModule, MatPaginatorModule, MatSelectModule, MatSnackBarModule, MatTableModule, RiskBadgeComponent, StatusBadgeComponent,
+    CommonModule, ReactiveFormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule,
+    MatProgressBarModule, MatPaginatorModule, MatSelectModule, MatSnackBarModule, MatTableModule,
+    RiskBadgeComponent, StatusBadgeComponent, TurnaroundDetailDialogComponent,
   ],
   template: `
     <header class="page-head">
@@ -74,7 +77,7 @@ import { parseHttpError, useHttp } from '../utils/request';
           <ng-container matColumnDef="units"><th mat-header-cell *matHeaderCellDef>投入设备</th><td mat-cell *matCellDef="let row">{{ row.ground_unit_ids.length ? row.ground_unit_ids.join(', ') : '未分配' }}</td></ng-container>
           <ng-container matColumnDef="risk"><th mat-header-cell *matHeaderCellDef>风险</th><td mat-cell *matCellDef="let row"><app-risk-badge [level]="row.risk_level"></app-risk-badge></td></ng-container>
           <ng-container matColumnDef="status"><th mat-header-cell *matHeaderCellDef>状态</th><td mat-cell *matCellDef="let row"><app-status-badge [value]="row.status"></app-status-badge></td></ng-container>
-          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><button *ngIf="canManage && row.status === 'open'" mat-stroked-button (click)="startChecks(row)">开始检查</button></td></ng-container>
+          <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let row"><div class="row-actions"><button mat-stroked-button (click)="showDetail(row)">周转详情</button><button *ngIf="canManage && row.status === 'open'" mat-stroked-button (click)="startChecks(row)">开始检查</button></div></td></ng-container>
           <tr mat-header-row *matHeaderRowDef="columns"></tr><tr mat-row *matRowDef="let row; columns: columns"></tr>
         </table>
         <div class="empty" *ngIf="!store.loading() && !store.items().length"><mat-icon>flight</mat-icon><strong>暂无匹配周转</strong><span>调整筛选条件或建立新周转</span></div>
@@ -87,6 +90,7 @@ export class TurnaroundsPage implements OnInit {
   readonly store = inject(TurnaroundStore);
   private readonly fb = inject(FormBuilder);
   private readonly http = useHttp();
+  private readonly dialog = inject(MatDialog);
   private readonly snack = inject(MatSnackBar);
   readonly auth = useAuth();
   readonly pagination = usePagination(20);
@@ -125,6 +129,10 @@ export class TurnaroundsPage implements OnInit {
       next: () => { this.saving = false; this.showCreate = false; this.reload(); this.snack.open('周转阶段已建立', '关闭', { duration: 2500 }); },
       error: error => { this.saving = false; this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }); },
     });
+  }
+
+  showDetail(row: Turnaround): void {
+    this.dialog.open(TurnaroundDetailDialogComponent, { data: { turnaround: row } });
   }
 
   startChecks(row: Turnaround): void {

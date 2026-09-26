@@ -15,16 +15,18 @@ import (
 )
 
 type GroundUnitService struct {
-	db             *gorm.DB
-	repo           *repository.GroundUnitRepository
-	turnaroundRepo *repository.TurnaroundRepository
-	clearanceRepo  *repository.ClearanceDecisionRepository
-	logger         *slog.Logger
+	db               *gorm.DB
+	repo             *repository.GroundUnitRepository
+	turnaroundRepo   *repository.TurnaroundRepository
+	clearanceRepo    *repository.ClearanceDecisionRepository
+	reinspectionRepo *repository.ReinspectionRepository
+	logger           *slog.Logger
 }
 
 func NewGroundUnitService(db *gorm.DB, repo *repository.GroundUnitRepository, turnaroundRepo *repository.TurnaroundRepository,
-	clearanceRepo *repository.ClearanceDecisionRepository, logger *slog.Logger) *GroundUnitService {
-	return &GroundUnitService{db: db, repo: repo, turnaroundRepo: turnaroundRepo, clearanceRepo: clearanceRepo, logger: logger}
+	clearanceRepo *repository.ClearanceDecisionRepository, reinspectionRepo *repository.ReinspectionRepository, logger *slog.Logger) *GroundUnitService {
+	return &GroundUnitService{db: db, repo: repo, turnaroundRepo: turnaroundRepo, clearanceRepo: clearanceRepo,
+		reinspectionRepo: reinspectionRepo, logger: logger}
 }
 
 func (s *GroundUnitService) CreateUnit(unit *model.GroundUnit, actor AuditContext) (*model.GroundUnit, error) {
@@ -63,7 +65,18 @@ func (s *GroundUnitService) List(page, pageSize int, state, unitType, search str
 	if len(unitType) > 40 || len(search) > 100 {
 		return nil, 0, util.NewAppError(constants.CodeValidationFailed, "filter value is too long")
 	}
-	return s.repo.List(page, pageSize, state, unitType, search)
+	rows, total, err := s.repo.List(page, pageSize, state, unitType, search)
+	if err != nil {
+		return nil, 0, err
+	}
+	pointers := make([]*model.GroundUnit, len(rows))
+	for index := range rows {
+		pointers[index] = &rows[index]
+	}
+	if err := s.enrichValidity(pointers...); err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
 }
 
 func (s *GroundUnitService) Summary() (map[string]any, error) {
@@ -78,7 +91,52 @@ func (s *GroundUnitService) Get(id uint64) (*model.GroundUnit, error) {
 		}
 		return nil, util.Wrap(err, "GroundUnit[id=%d] get failed", id)
 	}
+	if err := s.enrichValidity(unit); err != nil {
+		return nil, err
+	}
 	return unit, nil
+}
+
+// enrichValidity stamps a unit (or every unit in a list) with its latest
+// re-inspection and the standard (24h) / high-risk (8h) expiry flags for the
+// equipment page.
+func (s *GroundUnitService) enrichValidity(units ...*model.GroundUnit) error {
+	if len(units) == 0 {
+		return nil
+	}
+	ids := make([]uint64, 0, len(units))
+	for _, unit := range units {
+		ids = append(ids, unit.ID)
+	}
+	latest, err := s.reinspectionRepo.FindLatestByGroundUnitIDsTx(s.db, ids)
+	if err != nil {
+		return err
+	}
+	passed, err := s.reinspectionRepo.FindLatestPassedByGroundUnitIDsTx(s.db, ids)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, unit := range units {
+		if record, ok := latest[unit.ID]; ok {
+			unit.LatestReinspection = record
+		}
+		if unit.State != constants.UnitAvailable {
+			continue
+		}
+		anchor := unit.LastInspectionAt
+		if record, ok := passed[unit.ID]; ok {
+			anchor = &record.InspectedAt
+		}
+		if anchor == nil {
+			unit.Expired24h = true
+			unit.Expired8h = true
+			continue
+		}
+		unit.Expired24h = now.Sub(*anchor) > constants.ReinspectionWindowStandard
+		unit.Expired8h = now.Sub(*anchor) > constants.ReinspectionWindowHighRisk
+	}
+	return nil
 }
 
 func (s *GroundUnitService) ChangeState(id uint64, state, notes string, version int, role string, actor AuditContext) (*model.GroundUnit, error) {

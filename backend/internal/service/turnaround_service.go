@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"log/slog"
 	"sort"
@@ -17,19 +18,22 @@ import (
 )
 
 type TurnaroundService struct {
-	db            *gorm.DB
-	repo          *repository.TurnaroundRepository
-	checkRepo     *repository.SafetyCheckRepository
-	clearanceRepo *repository.ClearanceDecisionRepository
-	unitRepo      *repository.GroundUnitRepository
-	userRepo      *repository.UserRepository
-	logger        *slog.Logger
+	db               *gorm.DB
+	repo             *repository.TurnaroundRepository
+	checkRepo        *repository.SafetyCheckRepository
+	clearanceRepo    *repository.ClearanceDecisionRepository
+	unitRepo         *repository.GroundUnitRepository
+	reinspectionRepo *repository.ReinspectionRepository
+	userRepo         *repository.UserRepository
+	logger           *slog.Logger
 }
 
 func NewTurnaroundService(db *gorm.DB, repo *repository.TurnaroundRepository,
 	checkRepo *repository.SafetyCheckRepository, clearanceRepo *repository.ClearanceDecisionRepository,
-	unitRepo *repository.GroundUnitRepository, userRepo *repository.UserRepository, logger *slog.Logger) *TurnaroundService {
-	return &TurnaroundService{db: db, repo: repo, checkRepo: checkRepo, clearanceRepo: clearanceRepo, unitRepo: unitRepo, userRepo: userRepo, logger: logger}
+	unitRepo *repository.GroundUnitRepository, reinspectionRepo *repository.ReinspectionRepository,
+	userRepo *repository.UserRepository, logger *slog.Logger) *TurnaroundService {
+	return &TurnaroundService{db: db, repo: repo, checkRepo: checkRepo, clearanceRepo: clearanceRepo,
+		unitRepo: unitRepo, reinspectionRepo: reinspectionRepo, userRepo: userRepo, logger: logger}
 }
 
 func (s *TurnaroundService) Create(row *model.Turnaround, checks []model.SafetyCheck, actor AuditContext) (*model.Turnaround, error) {
@@ -254,21 +258,21 @@ func (s *TurnaroundService) Readiness(id uint64) (map[string]any, error) {
 			blockers = append(blockers, "failed check: "+check.CheckCode)
 		}
 	}
-	unitStates := make(map[string]string, len(row.GroundUnitIDs))
-	for _, rawID := range row.GroundUnitIDs {
-		unitID, parseErr := strconv.ParseUint(rawID, 10, 64)
-		if parseErr != nil {
-			blockers = append(blockers, "invalid ground unit id: "+rawID)
-			continue
+	validities, expiredIDs, validityErr := s.loadValidity(row)
+	if validityErr != nil {
+		return nil, validityErr
+	}
+	unitStates := make(map[string]string, len(validities))
+	expiredCodes := make([]string, 0, len(expiredIDs))
+	for _, validity := range validities {
+		rawID := strconv.FormatUint(validity.UnitID, 10)
+		unitStates[rawID] = validity.UnitState
+		if validity.UnitState != constants.UnitAvailable {
+			blockers = append(blockers, "ground unit "+validity.UnitCode+" is "+validity.UnitState)
 		}
-		unit, findErr := s.unitRepo.FindByID(unitID)
-		if findErr != nil {
-			blockers = append(blockers, "missing ground unit: "+rawID)
-			continue
-		}
-		unitStates[rawID] = unit.State
-		if unit.State != constants.UnitAvailable {
-			blockers = append(blockers, "ground unit "+unit.UnitCode+" is "+unit.State)
+		if validity.Expired {
+			expiredCodes = append(expiredCodes, validity.UnitCode)
+			blockers = append(blockers, validity.Reason)
 		}
 	}
 	decision, decisionErr := s.clearanceRepo.FindByTurnaround(id)
@@ -279,9 +283,24 @@ func (s *TurnaroundService) Readiness(id uint64) (map[string]any, error) {
 	readyForDecision := pending == 0
 	readyForFullClearance := pending == 0 && failed == 0 && len(blockers) == 0
 	return map[string]any{
-		"turnaround_id": id, "flight_no": row.FlightNo, "status": row.Status,
+		"turnaround_id": id, "flight_no": row.FlightNo, "status": row.Status, "risk_level": row.RiskLevel,
 		"pending_checks": pending, "failed_checks": failed, "unit_states": unitStates,
+		"unit_validities": validities, "expired_unit_ids": expiredIDs, "expired_unit_codes": expiredCodes,
 		"clearance_state": clearanceState, "ready_for_decision": readyForDecision,
 		"ready_for_full_clearance": readyForFullClearance, "blockers": blockers,
 	}, nil
+}
+
+func (s *TurnaroundService) loadValidity(row *model.Turnaround) ([]UnitValidity, []uint64, error) {
+	var validities []UnitValidity
+	var expired []uint64
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		validities, expired, err = LoadAssignedUnitValidity(tx, s.unitRepo, s.reinspectionRepo, row)
+		return err
+	}, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, util.Wrap(err, "Turnaround[id=%d] readiness failed", row.ID)
+	}
+	return validities, expired, nil
 }

@@ -1,6 +1,6 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, map } from 'rxjs';
-import { ApiResponse, GroundUnit, GroundUnitSummary, PageResult, UnitState } from '../types';
+import { ApiResponse, GroundUnit, GroundUnitSummary, PageResult, ReinspectionRecord, UnitState } from '../types';
 import { API_BASE, extractData } from '../utils/request';
 
 export interface GroundUnitPayload {
@@ -29,4 +29,18 @@ export function groundUnitCreateApi(http: HttpClient, payload: GroundUnitPayload
 
 export function groundUnitStateApi(http: HttpClient, id: number, state: UnitState, notes: string, version: number): Observable<GroundUnit> {
   return http.patch<ApiResponse<GroundUnit>>(`${API_BASE}/v1/ground-units/${id}/state`, { state, notes, version }).pipe(map(extractData));
+}
+
+export interface ReinspectionPayload {
+  result: 'passed' | 'failed';
+  evidence: string[];
+  remark: string;
+}
+
+export function reinspectionRegisterApi(http: HttpClient, groundUnitId: number, payload: ReinspectionPayload): Observable<ReinspectionRecord> {
+  return http.post<ApiResponse<ReinspectionRecord>>(`${API_BASE}/v1/ground-units/${groundUnitId}/reinspections`, payload).pipe(map(extractData));
+}
+
+export function reinspectionListApi(http: HttpClient, groundUnitId: number): Observable<ReinspectionRecord[]> {
+  return http.get<ApiResponse<ReinspectionRecord[]>>(`${API_BASE}/v1/ground-units/${groundUnitId}/reinspections`).pipe(map(extractData));
 }

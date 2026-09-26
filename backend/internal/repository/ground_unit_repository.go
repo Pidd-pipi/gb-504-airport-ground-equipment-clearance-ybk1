@@ -127,8 +127,25 @@ func (r *GroundUnitRepository) Summary() (map[string]any, error) {
 	for _, row := range typeRows {
 		types[row.Key] = row.Count
 	}
+	anchorSQL := `COALESCE(
+		(SELECT inspected_at FROM reinspection_records rr
+		 WHERE rr.ground_unit_id = ground_units.id AND rr.result = 'passed'
+		 ORDER BY inspected_at DESC, id DESC LIMIT 1),
+		last_inspection_at)`
+	var expired24h, expired8h int64
+	if err := r.db.Model(&model.GroundUnit{}).
+		Where("state = 'available' AND ("+anchorSQL+" IS NULL OR "+anchorSQL+" < ?)", time.Now().Add(-24*time.Hour)).
+		Count(&expired24h).Error; err != nil {
+		return nil, fmt.Errorf("count units expired past 24h: %w", err)
+	}
+	if err := r.db.Model(&model.GroundUnit{}).
+		Where("state = 'available' AND ("+anchorSQL+" IS NULL OR "+anchorSQL+" < ?)", time.Now().Add(-8*time.Hour)).
+		Count(&expired8h).Error; err != nil {
+		return nil, fmt.Errorf("count units expired past 8h: %w", err)
+	}
 	return map[string]any{
 		"total": total, "states": states, "types": types,
 		"dispatchable": states["available"], "unavailable": states["inspection"] + states["blocked"] + states["retired"],
+		"reinspection_expired_24h": expired24h, "reinspection_expired_8h": expired8h,
 	}, nil
 }
